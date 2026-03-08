@@ -1,0 +1,13 @@
+# yt-dlp GUI v4 — Post-Production Edition
+# Instale TUDO com um comando:
+#
+#   pip install -r requirements.txt
+#
+# O imageio-ffmpeg baixa um FFmpeg portatil automaticamente —
+# nao e necessario instalar o FFmpeg manualmente.
+
+customtkinter>=5.2.0
+yt-dlp>=2024.1.0
+Pillow>=10.0.0
+requests>=2.31.0
+static-ffmpeg>=2.5.0
