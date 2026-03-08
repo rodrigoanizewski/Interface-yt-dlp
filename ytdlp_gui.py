@@ -290,13 +290,27 @@ class Toast(ctk.CTkToplevel):
                      justify="left").pack(anchor="w")
 
         self._position(parent)
-        self.after(duration_ms, lambda: contextlib.suppress(Exception)(self.destroy)())
+        
+        # --- CORREÇÃO AQUI ---
+        # Usamos uma função simples para destruir a janela com segurança
+        self.after(duration_ms, self._safe_destroy)
+
+    def _safe_destroy(self):
+        try:
+            self.destroy()
+        except:
+            pass
 
     def _position(self, parent):
         self.update_idletasks()
-        x = parent.winfo_rootx() + parent.winfo_width()  - self.winfo_reqwidth()  - 20
-        y = parent.winfo_rooty() + parent.winfo_height() - self.winfo_reqheight() - 20
-        self.geometry(f"+{x}+{y}")
+        # Tenta posicionar no canto inferior direito do app pai
+        try:
+            x = parent.winfo_rootx() + parent.winfo_width()  - self.winfo_reqwidth()  - 20
+            y = parent.winfo_rooty() + parent.winfo_height() - self.winfo_reqheight() - 20
+            self.geometry(f"+{x}+{y}")
+        except:
+            # Fallback caso o parent não esteja disponível
+            self.geometry("+100+100")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1262,10 +1276,16 @@ class YtDlpGUI(ctk.CTk):
             postprocs.append({"key": "FFmpegMetadata", "add_metadata": True})
 
         if fmt == "audio":
+            # Define codec e qualidade baseado na sua escolha da UI
+            target_codec = "wav" if self.audio_wav_pcm.get() else aud
+            
+            # Se for MP3, força 320 (máximo). Se for WAV ou outros, "0" (melhor automático)
+            target_quality = "320" if target_codec == "mp3" else "0"
+
             postprocs.append({
                 "key": "FFmpegExtractAudio",
-                "preferredcodec": "wav" if self.audio_wav_pcm.get() else aud,
-                "preferredquality": "0",
+                "preferredcodec": target_codec,
+                "preferredquality": target_quality,
             })
         
         # SÓ EMBUTE THUMBNAIL SE NÃO FOR DNxHR/PRORES (evita erros de conversão)
@@ -1317,68 +1337,61 @@ class YtDlpGUI(ctk.CTk):
         # ── Opções Finais ─────────────────────────────────────────────────────
         ff = ffmpeg_path()
         opts = {
-            "format": format_str,
-            "outtmpl": outtmpl,
-            "postprocessors": postprocs,
-            "progress_hooks": [self._progress_hook],
-            "merge_output_format": final_ext,
+            "format":               format_str,
+            "outtmpl":              outtmpl,
+            "restrictfilenames":    False,
+            "windowsfilenames":     True,
+            "noplaylist":           not self.dl_playlist.get(),
+            "writesubtitles":       self.embed_subs.get() and not video_only,
+            "embedsubtitles":       self.embed_subs.get() and not video_only,
+            "writethumbnail":       self.embed_thumb.get() and not video_only,
+            "postprocessors":       postprocs,
+            "progress_hooks":       [self._progress_hook],
+            "quiet":                True,
+            "no_warnings":          True,
+            "http_headers":         {"User-Agent": USER_AGENTS[0]},
+            "add_metadata":         True,
+            "merge_output_format":  final_ext,
             **({"ffmpeg_location": os.path.dirname(ff)} if ff else {}),
             **self._cookie_opts(),
         }
 
-        if pp_ffmpeg_args:
-            opts["postprocessor_args"] = {
-                "VideoConvertor": pp_ffmpeg_args,
-                "ExtractAudio": pp_ffmpeg_args
-            }
-         # ── Lógica de Playlist Range ──────────────────────────────────────────
-        if self.dl_playlist.get():
-            start = self.pl_start.get().strip()
-            end = self.pl_end.get().strip()
-            if start.isdigit():
-                opts["playlist_items"] = f"{start}:{end if end.isdigit() else ''}"
-                self._log(f"Range de Playlist: {start} até {end or 'fim'}", "info")
+        # --- INICIALIZAÇÃO SEGURA DE ARGUMENTOS EXTRAS ---
+        opts["postprocessor_args"] = {}
 
-# Lógica de Trim (Corte de Vídeo) - Versão com Correção de Duração
+        # 1. Se for áudio, configura alta qualidade (48kHz + ID3v3)
+        if fmt == "audio":
+            opts["postprocessor_args"]["ExtractAudio"] = [
+                "-ar", "48000",
+                "-id3v2_version", "3"
+            ]
+
+        # 2. Se houver argumentos de perfil (ProRes, DNxHR, CFR, etc)
+        if pp_ffmpeg_args:
+            # Aplica no conversor de vídeo
+            opts["postprocessor_args"]["VideoConvertor"] = pp_ffmpeg_args
+            # Aplica também no áudio se estiver convertendo vídeo com PCM
+            if not video_only:
+                opts["postprocessor_args"]["ExtractAudio"] = opts["postprocessor_args"].get("ExtractAudio", []) + pp_ffmpeg_args
+
+        # 3. Lógica de Trim (Corte Cirúrgico)
         t_start = self.trim_start.get().strip()
         t_end   = self.trim_end.get().strip()
 
         if t_start or t_end:
-            # 1. Usamos o FFmpeg como downloader externo
             opts["external_downloader"] = "ffmpeg"
-            
-            # 2. Argumentos para o FFmpeg baixar apenas o trecho
             ffmpeg_i_args = []
-            if t_start:
-                ffmpeg_i_args.extend(["-ss", t_start])
-            if t_end:
-                ffmpeg_i_args.extend(["-to", t_end])
+            if t_start: ffmpeg_i_args.extend(["-ss", t_start])
+            if t_end:   ffmpeg_i_args.extend(["-to", t_end])
             
-            opts["external_downloader_args"] = {
-                'ffmpeg_i': ffmpeg_i_args
-            }
-
-            # 3. O SEGREDO: Instrução para o yt-dlp corrigir os timestamps
-            # Isso força o re-cálculo da duração total no cabeçalho do arquivo
-            opts["fixup"] = "force" 
+            opts["external_downloader_args"] = {'ffmpeg_i': ffmpeg_i_args}
+            opts["fixup"] = "force"
             
-            # 4. Adicionamos um argumento extra de post-processamento para garantir
-            # que o FFmpeg re-escreva o índice de duração (Duration)
-            if "postprocessor_args" not in opts:
-                opts["postprocessor_args"] = {}
-            
-            # Adiciona '–avoid_negative_ts make_zero' para resetar o tempo para 00:00
+            # Reset de timestamps para o player marcar o tempo correto
             if "ffmpeg" not in opts["postprocessor_args"]:
                 opts["postprocessor_args"]["ffmpeg"] = []
-            
-            opts["postprocessor_args"]["ffmpeg"].extend([
-                "-avoid_negative_ts", "make_zero",
-                "-map_metadata", "-1",  # Limpa metadados antigos que podem confundir o player
-                "-map_chapters", "-1"
-            ])
+            opts["postprocessor_args"]["ffmpeg"].extend(["-avoid_negative_ts", "make_zero"])
 
-            self._log(f"CORTE COM RESET DE TEMPO: {t_start or 'Início'} até {t_end or 'Fim'}", "warn")
-        
         return opts
 
     # ══════════════════════════════════════════════════════════════════════════
