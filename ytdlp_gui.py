@@ -384,7 +384,7 @@ class YtDlpGUI(ctk.CTk):
         self.configure(fg_color=C["bg"])
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ── Estado ────────────────────────────────────────────────────────────
+        # ── 1. ESTADOS ORIGINAIS ──────────────────────────────────────────
         self.dest_folder     = tk.StringVar(value=os.path.expanduser("~/Downloads"))
         self.format_choice   = tk.StringVar(value="video")
         self.resolution      = tk.StringVar(value="1080p")
@@ -399,13 +399,20 @@ class YtDlpGUI(ctk.CTk):
         self.cookie_browser  = tk.StringVar(value="chrome")
         self.name_template   = tk.StringVar(value="Titulo.ext")
 
-        # ── Novos estados v4 ──────────────────────────────────────────────────
+        # ── 2. ESTADOS V4 (PERFIS E CORTES) ───────────────────────────────
         self.output_profile  = tk.StringVar(value="Original (MP4/MKV)")
         self.target_fps      = tk.StringVar(value="Manter original")
         self.remove_silence  = tk.BooleanVar(value=False)
         self.video_only      = tk.BooleanVar(value=False)
-        self.audio_wav_pcm   = tk.BooleanVar(value=False)  # fix DaVinci HEVC/AAC
+        self.audio_wav_pcm   = tk.BooleanVar(value=False)
 
+        # ESTES SÃO OS QUE FALTAVAM (Eles precisam estar aqui, antes do build_ui)
+        self.pl_start        = tk.StringVar(value="")
+        self.pl_end          = tk.StringVar(value="")
+        self.trim_start      = tk.StringVar(value="") # Tempo inicial
+        self.trim_end        = tk.StringVar(value="")   # Tempo final
+
+        # ── 3. ESTADOS INTERNOS ───────────────────────────────────────────
         self._thumb_ref:       Optional[ctk.CTkImage] = None
         self._is_analyzing:    bool = False
         self._is_downloading:  bool = False
@@ -414,6 +421,8 @@ class YtDlpGUI(ctk.CTk):
         self._last_title:      str = "download"
         self._last_url:        str = ""
 
+        # ── 4. AGORA SIM, CONSTRÓI A INTERFACE ────────────────────────────
+        # Chamamos o build_ui só DEPOIS de ter criado todas as variáveis acima
         self._build_ui()
         self._check_ffmpeg_on_start()
 
@@ -432,6 +441,7 @@ class YtDlpGUI(ctk.CTk):
 
         self._section_url(body)
         self._section_info(body)
+        self._section_segments(body)
         self._section_format(body)
         self._section_pro(body)          # ← NOVO: perfis profissionais
         self._section_cookies(body)
@@ -581,6 +591,37 @@ class YtDlpGUI(ctk.CTk):
         self.lbl_extra = ctk.CTkLabel(r, text="", anchor="w",
             font=ctk.CTkFont(size=11), text_color="#444444")
         self.lbl_extra.grid(row=3, column=1, sticky="ew", pady=(2, 0))
+
+    def _section_segments(self, p):
+        f = self._card(p, "CONTROLE DE SEGMENTOS", "— selecione partes da playlist ou do vídeo")
+        
+        # --- Linha 1: Playlist Range ---
+        r1 = ctk.CTkFrame(f, fg_color="transparent")
+        r1.grid(row=1, column=0, sticky="ew", padx=14, pady=(5, 5))
+        
+        ctk.CTkLabel(r1, text="Playlist (Índice):", font=ctk.CTkFont(size=12), text_color=C["sub"], width=100, anchor="w").pack(side="left")
+        
+        ctk.CTkLabel(r1, text="De:", font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkEntry(r1, textvariable=self.pl_start, placeholder_text="1", width=60, height=28).pack(side="left", padx=5)
+        
+        ctk.CTkLabel(r1, text="Até:", font=ctk.CTkFont(size=11)).pack(side="left", padx=(10, 0))
+        ctk.CTkEntry(r1, textvariable=self.pl_end, placeholder_text="5", width=60, height=28).pack(side="left", padx=5)
+        
+        ctk.CTkLabel(r1, text=" (vazio = tudo)", font=ctk.CTkFont(size=10), text_color="#3a3a3a").pack(side="left", padx=10)
+
+        # --- Linha 2: Trim Video (Tempo) ---
+        r2 = ctk.CTkFrame(f, fg_color="transparent")
+        r2.grid(row=2, column=0, sticky="ew", padx=14, pady=(5, 12))
+        
+        ctk.CTkLabel(r2, text="Corte (Tempo):", font=ctk.CTkFont(size=12), text_color=C["sub"], width=100, anchor="w").pack(side="left")
+        
+        ctk.CTkLabel(r2, text="Início:", font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkEntry(r2, textvariable=self.trim_start, placeholder_text="00:00:00", width=90, height=28).pack(side="left", padx=5)
+        
+        ctk.CTkLabel(r2, text="Fim:", font=ctk.CTkFont(size=11)).pack(side="left", padx=(10, 0))
+        ctk.CTkEntry(r2, textvariable=self.trim_end, placeholder_text="00:05:00", width=90, height=28).pack(side="left", padx=5)
+        
+        ctk.CTkLabel(r2, text=" Formato: HH:MM:SS ou segundos (Ex: 01:30)", font=ctk.CTkFont(size=10), text_color=C["warn"]).pack(side="left", padx=10)
 
     def _section_format(self, p):
         f = self._card(p, "FORMATO BASE")
@@ -1290,6 +1331,53 @@ class YtDlpGUI(ctk.CTk):
                 "VideoConvertor": pp_ffmpeg_args,
                 "ExtractAudio": pp_ffmpeg_args
             }
+         # ── Lógica de Playlist Range ──────────────────────────────────────────
+        if self.dl_playlist.get():
+            start = self.pl_start.get().strip()
+            end = self.pl_end.get().strip()
+            if start.isdigit():
+                opts["playlist_items"] = f"{start}:{end if end.isdigit() else ''}"
+                self._log(f"Range de Playlist: {start} até {end or 'fim'}", "info")
+
+# Lógica de Trim (Corte de Vídeo) - Versão com Correção de Duração
+        t_start = self.trim_start.get().strip()
+        t_end   = self.trim_end.get().strip()
+
+        if t_start or t_end:
+            # 1. Usamos o FFmpeg como downloader externo
+            opts["external_downloader"] = "ffmpeg"
+            
+            # 2. Argumentos para o FFmpeg baixar apenas o trecho
+            ffmpeg_i_args = []
+            if t_start:
+                ffmpeg_i_args.extend(["-ss", t_start])
+            if t_end:
+                ffmpeg_i_args.extend(["-to", t_end])
+            
+            opts["external_downloader_args"] = {
+                'ffmpeg_i': ffmpeg_i_args
+            }
+
+            # 3. O SEGREDO: Instrução para o yt-dlp corrigir os timestamps
+            # Isso força o re-cálculo da duração total no cabeçalho do arquivo
+            opts["fixup"] = "force" 
+            
+            # 4. Adicionamos um argumento extra de post-processamento para garantir
+            # que o FFmpeg re-escreva o índice de duração (Duration)
+            if "postprocessor_args" not in opts:
+                opts["postprocessor_args"] = {}
+            
+            # Adiciona '–avoid_negative_ts make_zero' para resetar o tempo para 00:00
+            if "ffmpeg" not in opts["postprocessor_args"]:
+                opts["postprocessor_args"]["ffmpeg"] = []
+            
+            opts["postprocessor_args"]["ffmpeg"].extend([
+                "-avoid_negative_ts", "make_zero",
+                "-map_metadata", "-1",  # Limpa metadados antigos que podem confundir o player
+                "-map_chapters", "-1"
+            ])
+
+            self._log(f"CORTE COM RESET DE TEMPO: {t_start or 'Início'} até {t_end or 'Fim'}", "warn")
         
         return opts
 
